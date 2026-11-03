@@ -277,15 +277,18 @@ function buildDocDefinition(record, setup) {
   }
 }
 
-// Suggested filename: JobName_YourName_YYYY-MM-DD-HHMM (sanitized).
+// Suggested filename: ProjectName_FieldDate (sanitized) — the record's job
+// name (the form's "Project name") plus the record's own DATE field, e.g.
+// "Riverside_Plaza_2026-11-02". Falls back to the job number, then "DFWR";
+// a missing record date falls back to today.
 function buildFilename(r) {
-  var now = new Date();
-  var date = now.toISOString().slice(0, 10);
-  var time = now.toTimeString().slice(0, 5).replace(':', '');
-  var stem = [r && r.jobName, r && r.yourName]
-    .map(function (p) { return String(p || '').trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, ''); })
-    .filter(Boolean).join('_') || 'DFWR';
-  return (stem + '_' + date + '-' + time).slice(0, 120);
+  function clean(p) {
+    return String(p || '').trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+  }
+  var project = clean(r && r.jobName) || clean(r && r.jobNumber) || 'DFWR';
+  var date = String((r && r.date) || '').trim().replace(/[^0-9-]/g, '');
+  if (!date) date = new Date().toISOString().slice(0, 10);
+  return (project + '_' + date).slice(0, 120);
 }
 
 // Node-only export (ignored in the browser).

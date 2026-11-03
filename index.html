@@ -2725,26 +2725,103 @@ function pdfLibReady() {
 }
 
 /**
- * Builds and opens the PDF for a given record.
+ * Builds the PDF for a given record and delivers it under a real filename:
+ * "<Project name>_<field date>.pdf" (see buildFilename in build-doc.js).
  *
- * WORKFLOW (kept exactly as validated in the proof of concept — NO new
- * platform-detection): we call .open(), which shows the generated PDF. On
- * desktop it opens in a new tab; on iPad it opens the PDF viewer, from which
- * the user taps Share -> Save to Files. The suggested filename is carried by
- * the document's info.title (set inside buildDocDefinition), so there is no
- * document.title swap here. .open() must run inside the click handler (a user
- * gesture) for iOS Safari — it does, since these are called directly onclick.
+ * DELIVERY: the PDF is rendered to a Blob and handed out as a named File --
+ * via the native share sheet when the browser confirms it can share files,
+ * or as a Blob download otherwise (the same two-path pattern as the JSON
+ * backup export). This replaces the old .open() workflow: saving from the
+ * opened viewer dropped the filename, so exported PDFs arrived as
+ * "unknown". Must be called from a user gesture for the share sheet -- it
+ * is, since these are called directly from onclick handlers.
  *
  * Page numbering is automatic ("Page X of Y"). External supporting pages
  * are recorded separately in additionalAttachedPages.
  */
+// Guard: same pattern as exportBackup -- repeated taps must not stack up
+// multiple share operations.
+let pdfExportInProgress = false;
+
 function generatePdfFromRecord(r) {
   if (!r) { showToast('No record to generate'); return; }
-  if (!pdfLibReady()) { showToast('PDF engine not loaded — check pdfmake files'); return; }
+  if (!pdfLibReady()) { showToast('PDF engine not loaded -- check pdfmake files'); return; }
+  if (pdfExportInProgress) return;
+  pdfExportInProgress = true;
+
+  const filename = buildFilename(r) + '.pdf';
+
   try {
     const dd = buildDocDefinition(r, pdfSetup());
-    pdfMake.createPdf(dd).open();
+    pdfMake.createPdf(dd).getBlob(async (blob) => {
+      try {
+        // Prefer the native share sheet when the browser confirms it can
+        // share this specific file (same capability check as the JSON
+        // backup export): the saved file keeps its real name instead of
+        // arriving as "unknown", which is what saving from the old .open()
+        // viewer produced.
+        let pdfFile      = null;
+        let canShareFile = false;
+
+        if (typeof File === 'function') {
+          pdfFile = new File([blob], filename, { type: 'application/pdf' });
+
+          try {
+            canShareFile =
+              typeof navigator.share === 'function' &&
+              typeof navigator.canShare === 'function' &&
+              navigator.canShare({ files: [pdfFile] });
+          } catch (error) {
+            canShareFile = false;
+          }
+        }
+
+        if (canShareFile) {
+          try {
+            // Share the file only -- no title (see exportBackup: iOS counts
+            // a title as a second share item; the name rides on
+            // pdfFile.name).
+            await navigator.share({ files: [pdfFile] });
+            return;
+          } catch (error) {
+            // Closing the share sheet is a user cancellation, not an error.
+            if (error.name === 'AbortError') {
+              return;
+            }
+            // Do NOT fall back to the Blob download here: the original
+            // tap's transient user activation has already been consumed
+            // by navigator.share(), so a programmatic download would be
+            // unreliable.
+            console.error('DFWR PDF sharing failed:', error);
+            showToast('PDF export failed. Please try again.');
+            return;
+          }
+        }
+
+        // Fallback for browsers without native file sharing (e.g. desktop
+        // Firefox): download via a Blob object URL with the filename set.
+        const url    = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+
+        anchor.href          = url;
+        anchor.download      = filename;
+        anchor.style.display = 'none';
+
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+
+        // Delay cleanup so the browser has time to consume the object URL.
+        setTimeout(() => { URL.revokeObjectURL(url); }, 1000);
+      } catch (error) {
+        console.error('DFWR PDF export failed:', error);
+        showToast('PDF export failed. Please try again.');
+      } finally {
+        pdfExportInProgress = false;
+      }
+    });
   } catch (e) {
+    pdfExportInProgress = false;
     showToast('PDF generation failed');
     console.error('generatePdf error:', e);
   }
